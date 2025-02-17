@@ -43,6 +43,76 @@ resource "azurerm_subnet" "snet-bookstack-prod-germanywestcentral-001" {
   address_prefixes = [ "10.0.1.0/24" ]
 }
 
+/*
+Bookstack will be accessible through an ingress controller with a public ip address
+*/
+resource "azurerm_public_ip" "pip-bookstack-prod-germanywestcentral-001" {
+  name = "pip-bookstack-prod-germanywestcentral-001"
+  location = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.location
+  resource_group_name = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
+  allocation_method = "Static"
+  sku = "Standard"
+}
+
+resource "azurerm_application_gateway" "agw-bookstack-prod-germanywestcentral-001" {
+  name = "agw-bookstack-prod-germanywestcentral-001"
+  location = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.location
+  resource_group_name = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
+
+  sku {
+    name = "Standard_v2"
+    tier = "Standard_v2"
+    capacity = 2 // what means that??? ------------------------------------------------- check this
+  }
+
+  gateway_ip_configuration {
+    name = "gateway-ip-config"
+    subnet_id = azurerm_subnet.snet-bookstack-prod-germanywestcentral-001.id
+  }
+
+  frontend_ip_configuration {
+    name = "frontend-ip-config"
+    public_ip_address_id = azurerm_public_ip.pip-bookstack-prod-germanywestcentral-001.id
+  }
+
+  frontend_port {
+    name = "frontend-port-https"
+    port = 443
+  }
+
+  backend_address_pool {
+    name = "bookstack-backend-pool"
+    fqdns = [
+      "${azurerm_container_group.ci-bookstack-prod-germanywestcentral-001.dns_name_label}.westeurope.azurecontainer.io"
+    ]
+  }
+
+  backend_http_settings {
+    name                  = "https-settings"
+    cookie_based_affinity = "Disabled"
+    port                  = 8080
+    protocol              = "Http"
+    request_timeout       = 30
+  }
+
+  http_listener {
+    name                           = "https-listener"
+    frontend_ip_configuration_name = "frontend-ip"
+    frontend_port_name             = "https-port"
+    protocol                       = "Https"
+    //ssl_certificate_name = "change this"
+  }
+
+  request_routing_rule {
+    name                       = "bookstack-routing-rule"
+    rule_type                  = "Basic"
+    http_listener_name         = "https-listener"
+    backend_address_pool_name  = "bookstack-backend-pool"
+    backend_http_settings_name = "https-settings"
+  }
+}
+
+// CAUTION -> We need a ssl Certificate for this - >
 
 /*
 Bookstack requires a local image repository
