@@ -1,3 +1,10 @@
+# terraform files
+.terraform
+*.lock*
+*.tfstate*
+prodPlan
+*.plan
+
 # Windows image file caches
 Thumbs.db
 ehthumbs.db
