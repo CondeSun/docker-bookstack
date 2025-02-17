@@ -56,12 +56,15 @@ resource "azurerm_container_registry" "crbookstackprodgermanywestcentral001" {
   location = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.location
   resource_group_name = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
   sku = "Basic"
+  admin_enabled = true // enable admin access for local docker image push
 }
 
 /*
 This step will build the docker image locally and push it to the newly created registry
 */
 resource "null_resource" "build_bookstack_docker_image_locally" {
+  depends_on = [ azurerm_container_registry.crbookstackprodgermanywestcentral001 ] // azure container repository should be ready before image build
+
   triggers = {
     image_name = "bookstack-app"
     image_tag = "latest"
@@ -99,8 +102,14 @@ resource "azurerm_storage_share" "mysqlshare" {
   quota = 50
 }
 
-resource "azurerm_storage_share" "bookstackshare" {
-  name = "bookstackshare"
+resource "azurerm_storage_share" "bookstackshareuploads" {
+  name = "bookstackshareuploads"
+  storage_account_id = azurerm_storage_account.stbkstkgwc001.id
+  quota = 50
+}
+
+resource "azurerm_storage_share" "bookstacksharestorageuploads" {
+  name = "bookstacksharestorageuploads"
   storage_account_id = azurerm_storage_account.stbkstkgwc001.id
   quota = 50
 }
@@ -115,11 +124,13 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
   name = "ci-bookstack-prod-germanywestcentral-001"
   location = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.location
   resource_group_name = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
+
   os_type = "Linux"
   ip_address_type = "Public"
   dns_name_label = "bookstack-application"
+
   exposed_port = [{
-    port = 443
+    port = 8080
     protocol = "TCP"
   }]
 
@@ -137,7 +148,7 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
     }
 
     ports {
-      port = 1433
+      port = 3306
       protocol = "TCP"
     }
 
@@ -152,7 +163,7 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
 
   container {
     name = "bookstack-application"
-    image = "linuxserver/bookstack" # public dockerhub image is a bad idea due to docker rate limiting
+    image = "linuxserver/bookstack" // public dockerhub image is a bad idea due to docker rate limiting
     cpu = "1.0"
     memory = "2.0"
 
@@ -161,17 +172,27 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
       DB_DATABASE = var.bookstack-db-name
       DB_USERNAME = var.bookstack-db-user
       DB_PASSWORD = var.bookstack-db-password
+      APP_URL = "https://${azurerm_container_group.ci-bookstack-prod-germanywestcentral-001.dns_name_label}.westeurope.azurecontainer.io" // set default app url to container url
+      APP_KEY = var.bookstack-app-key
     }
 
     ports {
-      port = 443
+      port = 8080
       protocol = "TCP"
     }
 
     volume {
-      name = "bookstack-volume"
-      mount_path = "/config"
-      share_name = azurerm_storage_share.bookstackshare.name
+      name = "bookstack-volume-uploads"
+      mount_path = "/var/www/bookstack/public/uploads"
+      share_name = azurerm_storage_share.bookstackshareuploads.name
+      storage_account_name = azurerm_storage_account.stbkstkgwc001.name
+      storage_account_key = azurerm_storage_account.stbkstkgwc001.primary_access_key
+    }
+
+    volume {
+      name = "bookstack-volume-storage-uploads"
+      mount_path = "/var/www/bookstack/storage/uploads"
+      share_name = azurerm_storage_share.bookstacksharestorageuploads.name
       storage_account_name = azurerm_storage_account.stbkstkgwc001.name
       storage_account_key = azurerm_storage_account.stbkstkgwc001.primary_access_key
     }
