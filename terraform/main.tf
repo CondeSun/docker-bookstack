@@ -41,6 +41,15 @@ resource "azurerm_subnet" "snet-bookstack-prod-germanywestcentral-001" {
   resource_group_name  = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
   virtual_network_name = azurerm_virtual_network.vnet-bookstack-prod-germanywestcentral-001.name
   address_prefixes     = ["10.0.1.0/24"]
+
+  // delegate this subnet for container instance use only
+  delegation {
+    name = "snet-bookstack-prod-germanywestcentral-001-ci-delegation"
+    service_delegation {
+      name    = "Microsoft.ContainerInstance/containerGroups"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
+    }
+  }
 }
 
 /*
@@ -54,6 +63,7 @@ resource "azurerm_public_ip" "pip-bookstack-prod-germanywestcentral-001" {
   sku                 = "Standard"
 }
 
+/*
 resource "azurerm_application_gateway" "agw-bookstack-prod-germanywestcentral-001" {
   name                = "agw-bookstack-prod-germanywestcentral-001"
   location            = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.location
@@ -111,6 +121,7 @@ resource "azurerm_application_gateway" "agw-bookstack-prod-germanywestcentral-00
     backend_http_settings_name = "https-settings"
   }
 }
+*/
 
 // CAUTION -> We need a ssl Certificate for this - >
 
@@ -155,6 +166,26 @@ resource "null_resource" "build_bookstack_docker_image_locally" {
 Copy Mysql Image from Docker Hub to prior created azure container registry with local-exec
 */
 resource "null_resource" "import_mysql_image_to_registry" {
+  depends_on = [azurerm_container_registry.crbookstackprodgermanywestcentral001] // also depends on registry
+
+   triggers = {
+    image_name              = "mysql"
+    image_tag               = "9.2.0"
+    registry_uri            = azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server
+    registry_admin_username = azurerm_container_registry.crbookstackprodgermanywestcentral001.admin_username
+    registry_admin_password = azurerm_container_registry.crbookstackprodgermanywestcentral001.admin_password
+  }
+
+  provisioner "local-exec" {
+    command     = "./scripts/pull_mysql_and_push_image.sh ${self.triggers.image_name} ${self.triggers.image_tag} ${self.triggers.registry_uri} ${self.triggers.registry_admin_username} ${self.triggers.registry_admin_password}"
+    interpreter = ["bash", "-c"]
+  }
+}
+
+
+/*
+disabled due to missing platform specifier for az acr import cmdlet
+resource "null_resource" "import_mysql_image_to_registry" {
   provisioner "local-exec" {
         command = <<EOT
       az acr import --name ${azurerm_container_registry.crbookstackprodgermanywestcentral001.name} \
@@ -165,6 +196,9 @@ resource "null_resource" "import_mysql_image_to_registry" {
   }
   depends_on = [ azurerm_container_registry.crbookstackprodgermanywestcentral001 ]
 }
+*/
+
+
 
 /*
 This Storage Account will hold the data directory of both mysql and bookstack
@@ -204,17 +238,24 @@ bookstack will have a public ip with port 443 exposed to it
 mysql will have a private ip inside the network and is only reached by the bookstack container
 */
 resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
+  depends_on = [  azurerm_container_registry.crbookstackprodgermanywestcentral001, // depends on all docker images and registry
+                  null_resource.build_bookstack_docker_image_locally,
+                  null_resource.import_mysql_image_to_registry ]
+
   name                = "ci-bookstack-prod-germanywestcentral-001"
   location            = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.location
   resource_group_name = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
 
   os_type         = "Linux"
-  ip_address_type = "Public"
-  dns_name_label  = "bookstack-application"
+  ip_address_type = "Private" // get ip from internal subnet - will be used for azure application gateway later on
+  subnet_ids = [ azurerm_subnet.snet-bookstack-prod-germanywestcentral-001.id ] // ip address type Private needs a subnet_id
 
   exposed_port = [{
     port     = 8080
-    protocol = "TCP"
+    protocol = "TCP" // allow bookstack access
+  }, {
+    port = 3306
+    protocol = "TCP" // allow mysql access
   }]
 
   image_registry_credential {
