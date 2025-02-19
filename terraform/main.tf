@@ -151,7 +151,7 @@ resource "null_resource" "build_bookstack_docker_image_locally" {
   depends_on = [azurerm_container_registry.crbookstackprodgermanywestcentral001] // azure container repository should be ready before image build
 
   triggers = {
-    image_name              = "linuxserver/bookstack"
+    image_name              = "solidnerd/bookstack"
     image_tag               = "24.12.1"
     registry_uri            = azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server
     dockerfile_path         = "../Dockerfile"
@@ -272,6 +272,8 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
     server   = azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server
   }
 
+/*
+Demo container for testing purposes
   container {
     name   = "aci-helloworld"
     image  = "mcr.microsoft.com/azuredocs/aci-hellofiles:latest"
@@ -283,9 +285,10 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
       protocol = "TCP"
     }
   }
+  */
 
   container {
-    name   = "bookstack-mysql"
+    name   = "mysql"
     image  = "${azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server}/mysql:9.2.0"
     cpu    = "1.0"
     memory = "2.0"
@@ -315,19 +318,20 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
 
   container {
 
-    name  = "bookstack-application"
-    image = "${azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server}/linuxserver/bookstack:24.12.1"
+    name  = "bookstack"
+    image = "${azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server}/solidnerd/bookstack:24.12.1"
 
     cpu    = "1.0"
     memory = "2.0"
 
     environment_variables = {
-      DB_HOST     = "bookstack-mysql"
+      // why using localhost??? -> Azure container instance runs on kubernetes -> all containers are running inside a single pod!
+      DB_HOST     = "127.0.0.1:3306" // IMPORTANT!!! for laravel 5.x -> change it directly to loopback ip
       DB_DATABASE = var.bookstack-db-name
       DB_USERNAME = var.bookstack-db-user
       DB_PASSWORD = var.bookstack-db-password
       APP_URL     = var.bookstack-app-url
-      APP_KEY     = "base64:y9PM/0TXxdZZQ056kpi+/M1BP3crGPKh4xw4XSvNCvs="
+      APP_KEY     = "y9PM/0TXxdZZQ056kpi+/M1BP3crGPKh4xw4XSvNCvs="
     }
 
     ports {
@@ -355,7 +359,3 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
     */
   }
 }
-
-
-
-
