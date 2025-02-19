@@ -1,0 +1,149 @@
+param azureSubscriptionId string
+param azureTenantId string
+param bookstackDbRootPw string
+param bookstackDbName string
+param bookstackDbUser string
+param bookstackDbPassword string
+param bookstackAppUrl string
+
+resource rg 'Microsoft.Resources/resourceGroups@2021-04-01' = {
+  name: 'rg-bookstack-prod-germanywestcentral-001'
+  location: 'westeurope'
+}
+
+resource vnet 'Microsoft.Network/virtualNetworks@2021-02-01' = {
+  name: 'vnet-bookstack-prod-germanywestcentral-001'
+  location: rg.location
+  properties: {
+    addressSpace: {
+      addressPrefixes: ['10.0.0.0/16']
+    }
+  }
+}
+
+resource subnet 'Microsoft.Network/virtualNetworks/subnets@2021-02-01' = {
+  name: 'snet-bookstack-prod-germanywestcentral-001'
+  parent: vnet
+  properties: {
+    addressPrefix: '10.0.1.0/24'
+    delegations: [
+      {
+        name: 'snet-bookstack-prod-germanywestcentral-001-ci-delegation'
+        properties: {
+          serviceName: 'Microsoft.ContainerInstance/containerGroups'
+        }
+      }
+    ]
+  }
+}
+
+resource publicIp 'Microsoft.Network/publicIPAddresses@2021-02-01' = {
+  name: 'pip-bookstack-prod-germanywestcentral-001'
+  location: rg.location
+  properties: {
+    publicIPAllocationMethod: 'Static'
+    sku: {
+      name: 'Standard'
+    }
+  }
+}
+
+resource containerRegistry 'Microsoft.ContainerRegistry/registries@2021-06-01-preview' = {
+  name: 'crbookstackprodgermanywestcentral001'
+  location: rg.location
+  sku: {
+    name: 'Basic'
+  }
+  properties: {
+    adminUserEnabled: true
+  }
+}
+
+resource storageAccount 'Microsoft.Storage/storageAccounts@2021-06-01' = {
+  name: 'stbkstkgwc001'
+  location: rg.location
+  sku: {
+    name: 'Standard_LRS'
+  }
+}
+
+resource storageShareMysql 'Microsoft.Storage/storageAccounts/fileServices/shares@2021-06-01' = {
+  name: 'mysqlshare'
+  parent: storageAccount
+  properties: {
+    shareQuota: 50
+  }
+}
+
+resource storageShareUploads 'Microsoft.Storage/storageAccounts/fileServices/shares@2021-06-01' = {
+  name: 'bookstackshareuploads'
+  parent: storageAccount
+  properties: {
+    shareQuota: 50
+  }
+}
+
+resource containerGroup 'Microsoft.ContainerInstance/containerGroups@2021-07-01' = {
+  name: 'ci-bookstack-prod-germanywestcentral-001'
+  location: rg.location
+  properties: {
+    osType: 'Linux'
+    subnetIds: [
+      {
+        id: subnet.id
+      }
+    ]
+    containers: [
+      {
+        name: 'bookstack-mysql'
+        properties: {
+          image: '${containerRegistry.properties.loginServer}/mysql:9.2.0'
+          resources: {
+            requests: {
+              cpu: 1.0
+              memoryInGB: 2.0
+            }
+          }
+          environmentVariables: [
+            { name: 'MYSQL_ROOT_PASSWORD', value: bookstackDbRootPw },
+            { name: 'MYSQL_DATABASE', value: bookstackDbName },
+            { name: 'MYSQL_USER', value: bookstackDbUser },
+            { name: 'MYSQL_PASSWORD', value: bookstackDbPassword }
+          ]
+          ports: [
+            { port: 3306, protocol: 'TCP' }
+          ]
+        }
+      },
+      {
+        name: 'bookstack-application'
+        properties: {
+          image: '${containerRegistry.properties.loginServer}/linuxserver/bookstack:24.12.1'
+          resources: {
+            requests: {
+              cpu: 1.0
+              memoryInGB: 2.0
+            }
+          }
+          environmentVariables: [
+            { name: 'DB_HOST', value: 'bookstack-mysql' },
+            { name: 'DB_DATABASE', value: bookstackDbName },
+            { name: 'DB_USERNAME', value: bookstackDbUser },
+            { name: 'DB_PASSWORD', value: bookstackDbPassword },
+            { name: 'APP_URL', value: bookstackAppUrl }
+          ]
+          ports: [
+            { port: 8080, protocol: 'TCP' }
+          ]
+        }
+      }
+    ]
+    imageRegistryCredentials: [
+      {
+        server: containerRegistry.properties.loginServer
+        username: containerRegistry.properties.adminUserEnabled
+        password: 'PLACEHOLDER_FOR_ADMIN_PASSWORD'
+      }
+    ]
+  }
+}

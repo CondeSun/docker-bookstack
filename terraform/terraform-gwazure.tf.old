@@ -1,0 +1,95 @@
+provider "azurerm" {
+  features {}
+}
+
+resource "azurerm_virtual_network" "vnet_bookstack" {
+  name                = "vnet-bookstack-prod-germanywestcentral-001"
+  location            = "westeurope"
+  resource_group_name = "rg-bookstack-prod-germanywestcentral-001"
+
+  address_space = ["10.0.0.0/16"]
+}
+
+resource "azurerm_subnet" "snet_bookstack" {
+  name                 = "snet-bookstack-prod-germanywestcentral-001"
+  resource_group_name  = "rg-bookstack-prod-germanywestcentral-001"
+  virtual_network_name = azurerm_virtual_network.vnet_bookstack.name
+  address_prefixes     = ["10.0.1.0/24"]
+}
+
+resource "azurerm_subnet" "defaultgwsub" {
+  name                 = "defaultgwsub"
+  resource_group_name  = "rg-bookstack-prod-germanywestcentral-001"
+  virtual_network_name = azurerm_virtual_network.vnet_bookstack.name
+  address_prefixes     = ["10.0.0.240/28"]
+}
+
+resource "azurerm_public_ip" "newpublicipforgatway" {
+  name                = "newpublicipforgatway"
+  location            = "westeurope"
+  resource_group_name = "rg-bookstack-prod-germanywestcentral-001"
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  ip_version          = "IPv4"
+  idle_timeout_in_minutes = 4
+  zones               = ["1", "2", "3"]
+}
+
+resource "azurerm_application_gateway" "truegateway" {
+  name                = "truegateway"
+  location            = "westeurope"
+  resource_group_name = "rg-bookstack-prod-germanywestcentral-001"
+
+  sku {
+    name     = "Basic"
+    tier     = "Basic"
+    capacity = 2
+  }
+
+  gateway_ip_configuration {
+    name      = "appGatewayIpConfig"
+    subnet_id = azurerm_subnet.defaultgwsub.id
+  }
+
+  frontend_ip_configuration {
+    name                 = "appGwPublicFrontendIpIPv4"
+    public_ip_address_id = azurerm_public_ip.newpublicipforgatway.id
+  }
+
+  frontend_port {
+    name = "port_80"
+    port = 80
+  }
+
+  backend_address_pool {
+    name = "backendpooling"
+    backend_addresses {
+      ip_address = "10.0.1.4"
+    }
+  }
+
+  backend_http_settings {
+    name                  = "backendsettings1"
+    cookie_based_affinity = "Disabled"
+    port                  = 80
+    protocol              = "Http"
+    request_timeout       = 20
+  }
+
+  http_listener {
+    name                           = "http1"
+    frontend_ip_configuration_name = "appGwPublicFrontendIpIPv4"
+    frontend_port_name             = "port_80"
+    protocol                       = "Http"
+  }
+
+  request_routing_rule {
+    name                       = "rule1"
+    rule_type                  = "Basic"
+    http_listener_name         = "http1"
+    backend_address_pool_name  = "backendpooling"
+    backend_http_settings_name = "backendsettings1"
+  }
+
+  enable_http2 = true
+}

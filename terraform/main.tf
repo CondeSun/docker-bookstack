@@ -54,6 +54,7 @@ resource "azurerm_subnet" "snet-bookstack-prod-germanywestcentral-001" {
 
 /*
 Bookstack will be accessible through an ingress controller with a public ip address
+This public ip address will be able to 
 */
 resource "azurerm_public_ip" "pip-bookstack-prod-germanywestcentral-001" {
   name                = "pip-bookstack-prod-germanywestcentral-001"
@@ -61,6 +62,9 @@ resource "azurerm_public_ip" "pip-bookstack-prod-germanywestcentral-001" {
   resource_group_name = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
   allocation_method   = "Static"
   sku                 = "Standard"
+  ip_version =        "IPv4"
+  idle_timeout_in_minutes = 4 // what is this?
+  zones = [ "1" ]
 }
 
 /*
@@ -147,8 +151,8 @@ resource "null_resource" "build_bookstack_docker_image_locally" {
   depends_on = [azurerm_container_registry.crbookstackprodgermanywestcentral001] // azure container repository should be ready before image build
 
   triggers = {
-    image_name              = "bookstack-app"
-    image_tag               = "latest"
+    image_name              = "linuxserver/bookstack"
+    image_tag               = "24.12.1"
     registry_uri            = azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server
     dockerfile_path         = "../Dockerfile"
     dockerfile_context      = "../"
@@ -168,7 +172,7 @@ Copy Mysql Image from Docker Hub to prior created azure container registry with 
 resource "null_resource" "import_mysql_image_to_registry" {
   depends_on = [azurerm_container_registry.crbookstackprodgermanywestcentral001] // also depends on registry
 
-   triggers = {
+  triggers = {
     image_name              = "mysql"
     image_tag               = "9.2.0"
     registry_uri            = azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server
@@ -238,35 +242,51 @@ bookstack will have a public ip with port 443 exposed to it
 mysql will have a private ip inside the network and is only reached by the bookstack container
 */
 resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
-  depends_on = [  azurerm_container_registry.crbookstackprodgermanywestcentral001, // depends on all docker images and registry
-                  null_resource.build_bookstack_docker_image_locally,
-                  null_resource.import_mysql_image_to_registry ]
+  depends_on = [azurerm_container_registry.crbookstackprodgermanywestcentral001, // depends on all docker images and registry
+    azurerm_storage_account.stbkstkgwc001,
+    null_resource.build_bookstack_docker_image_locally,
+  null_resource.import_mysql_image_to_registry]
 
   name                = "ci-bookstack-prod-germanywestcentral-001"
   location            = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.location
   resource_group_name = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
 
   os_type         = "Linux"
-  ip_address_type = "Private" // get ip from internal subnet - will be used for azure application gateway later on
-  subnet_ids = [ azurerm_subnet.snet-bookstack-prod-germanywestcentral-001.id ] // ip address type Private needs a subnet_id
+  ip_address_type = "Private"                                                      // get ip from internal subnet - will be used for azure application gateway later on
+  subnet_ids      = [azurerm_subnet.snet-bookstack-prod-germanywestcentral-001.id] // ip address type Private needs a subnet_id
 
   exposed_port = [{
     port     = 8080
     protocol = "TCP" // allow bookstack access
-  }, {
-    port = 3306
+    }, {
+    port     = 3306
     protocol = "TCP" // allow mysql access
+    }, {
+    port     = 80
+    protocol = "TCP" // allow demo container access access
   }]
 
   image_registry_credential {
     username = azurerm_container_registry.crbookstackprodgermanywestcentral001.admin_username
     password = azurerm_container_registry.crbookstackprodgermanywestcentral001.admin_password
-    server = azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server
+    server   = azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server
+  }
+
+  container {
+    name   = "aci-helloworld"
+    image  = "mcr.microsoft.com/azuredocs/aci-hellofiles:latest"
+    cpu    = "1"
+    memory = "1"
+
+    ports {
+      port     = 80
+      protocol = "TCP"
+    }
   }
 
   container {
     name   = "bookstack-mysql"
-    image = "${azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server}/mysql:9.2.0" 
+    image  = "${azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server}/mysql:9.2.0"
     cpu    = "1.0"
     memory = "2.0"
 
@@ -282,6 +302,7 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
       protocol = "TCP"
     }
 
+    /*
     volume {
       name                 = "mysql-volume"
       mount_path           = "/var/lib/mysql"
@@ -289,14 +310,14 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
       storage_account_name = azurerm_storage_account.stbkstkgwc001.name
       storage_account_key  = azurerm_storage_account.stbkstkgwc001.primary_access_key
     }
+    */
   }
 
   container {
 
-    name   = "bookstack-application"
-    image  = "${azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server}/bookstack-app:latest"
+    name  = "bookstack-application"
+    image = "${azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server}/linuxserver/bookstack:24.12.1"
 
-    
     cpu    = "1.0"
     memory = "2.0"
 
@@ -306,7 +327,7 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
       DB_USERNAME = var.bookstack-db-user
       DB_PASSWORD = var.bookstack-db-password
       APP_URL     = var.bookstack-app-url
-      APP_KEY     = var.bookstack-app-key
+      APP_KEY     = "base64:y9PM/0TXxdZZQ056kpi+/M1BP3crGPKh4xw4XSvNCvs="
     }
 
     ports {
@@ -314,6 +335,7 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
       protocol = "TCP"
     }
 
+    /*
     volume {
       name                 = "bookstack-volume-uploads"
       mount_path           = "/var/www/bookstack/public/uploads"
@@ -321,7 +343,8 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
       storage_account_name = azurerm_storage_account.stbkstkgwc001.name
       storage_account_key  = azurerm_storage_account.stbkstkgwc001.primary_access_key
     }
-
+*/
+    /*
     volume {
       name                 = "bookstack-volume-storage-uploads"
       mount_path           = "/var/www/bookstack/storage/uploads"
@@ -329,6 +352,7 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
       storage_account_name = azurerm_storage_account.stbkstkgwc001.name
       storage_account_key  = azurerm_storage_account.stbkstkgwc001.primary_access_key
     }
+    */
   }
 }
 
