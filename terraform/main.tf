@@ -36,11 +36,12 @@ resource "azurerm_virtual_network" "vnet-bookstack-prod-germanywestcentral-001" 
   resource_group_name = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
 }
 
+// smallest host subnet for azure container instance
 resource "azurerm_subnet" "snet-bookstack-prod-germanywestcentral-001" {
   name                 = "snet-bookstack-prod-germanywestcentral-001"
   resource_group_name  = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
   virtual_network_name = azurerm_virtual_network.vnet-bookstack-prod-germanywestcentral-001.name
-  address_prefixes     = ["10.0.1.0/24"]
+  address_prefixes     = ["10.0.1.0/28"]
 
   // delegate this subnet for container instance use only
   delegation {
@@ -50,6 +51,14 @@ resource "azurerm_subnet" "snet-bookstack-prod-germanywestcentral-001" {
       actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
     }
   }
+}
+
+// single host application gateway for azure applicaton proxy
+resource "azurerm_subnet" "snet-bookstack-prod-germanywestcentral-002" {
+  name = "snet-bookstack-prod-germanywestcentral-002"
+  resource_group_name = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
+  virtual_network_name = azurerm_virtual_network.vnet-bookstack-prod-germanywestcentral-001.name
+  address_prefixes = ["10.0.1.16/28"]
 }
 
 /*
@@ -67,67 +76,76 @@ resource "azurerm_public_ip" "pip-bookstack-prod-germanywestcentral-001" {
   zones = [ "1" ]
 }
 
-/*
 resource "azurerm_application_gateway" "agw-bookstack-prod-germanywestcentral-001" {
-  name                = "agw-bookstack-prod-germanywestcentral-001"
-  location            = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.location
-  resource_group_name = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
+  depends_on = [ azurerm_container_group.ci-bookstack-prod-germanywestcentral-001 ]
 
+  name = "agw-bookstack-prod-germanywestcentral-001"
+  location = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.location
+  resource_group_name = azurerm_resource_group.rg-bookstack-prod-germanywestcentral-001.name
+  
   sku {
-    name     = "Standard_v2"
-    tier     = "Standard_v2"
-    capacity = 2 // what means that??? ------------------------------------------------- check this
+    name = "Basic" // keep it minimal
+    tier = "Basic"
+    capacity = 1 // only one instance no ha required
   }
 
   gateway_ip_configuration {
-    name      = "gateway-ip-config"
-    subnet_id = azurerm_subnet.snet-bookstack-prod-germanywestcentral-001.id
+    name = "agw-bookstack-prod-germanywestcentral-001-gw-ip"
+    subnet_id = azurerm_subnet.snet-bookstack-prod-germanywestcentral-002.id
   }
 
+  // important for http listener below
   frontend_ip_configuration {
-    name                 = "frontend-ip-config"
+    name = "agw-bookstack-prod-germanywestcentral-001-fe-ip"
     public_ip_address_id = azurerm_public_ip.pip-bookstack-prod-germanywestcentral-001.id
   }
 
+  // important for http listener below
   frontend_port {
+    name = "agw-bookstack-prod-germanywestcentral-001-fe-pt"
+    port = 80 // change this later to https
+  }
+  /*
+    frontend_port {
     name = "frontend-port-https"
     port = 443
   }
+  */
 
+  // important for request routing rule below
   backend_address_pool {
-    name = "bookstack-backend-pool"
-    fqdns = [
-      "${azurerm_container_group.ci-bookstack-prod-germanywestcentral-001.dns_name_label}.westeurope.azurecontainer.io"
-    ]
+    name = "agw-bookstack-prod-germanywestcentral-001-be-addr-pool"
+    ip_addresses = [ azurerm_container_group.ci-bookstack-prod-germanywestcentral-001.ip_address ]
   }
 
+  // important for request routing rule below
   backend_http_settings {
-    name                  = "https-settings"
-    cookie_based_affinity = "Disabled"
-    port                  = 8080
-    protocol              = "Http"
-    request_timeout       = 30
+    name = "agw-bookstack-prod-germanywestcentral-001-be-set"
+    cookie_based_affinity = "Disabled" // no cookies required -> no load balancing
+    port = 8080 // bookstack runs on 8080
+    protocol = "Http"
+    request_timeout = 20 // default request timeout
   }
 
   http_listener {
-    name                           = "https-listener"
-    frontend_ip_configuration_name = "frontend-ip"
-    frontend_port_name             = "https-port"
-    protocol                       = "Https"
-    //ssl_certificate_name = "change this"
+    name = "agw-bookstack-prod-germanywestcentral-001-http-listener"
+    frontend_ip_configuration_name = "agw-bookstack-prod-germanywestcentral-001-fe-ip"
+    frontend_port_name = "agw-bookstack-prod-germanywestcentral-001-fe-pt"
+    protocol = "Http" // change this later to https
   }
 
   request_routing_rule {
-    name                       = "bookstack-routing-rule"
-    rule_type                  = "Basic"
-    http_listener_name         = "https-listener"
-    backend_address_pool_name  = "bookstack-backend-pool"
-    backend_http_settings_name = "https-settings"
+    name = "agw-bookstack-prod-germanywestcentral-001-rule1"
+    priority = "1" // import for newer api versions
+    rule_type = "Basic"
+    http_listener_name = "agw-bookstack-prod-germanywestcentral-001-http-listener"
+    backend_address_pool_name = "agw-bookstack-prod-germanywestcentral-001-be-addr-pool"
+    backend_http_settings_name = "agw-bookstack-prod-germanywestcentral-001-be-set"
   }
-}
-*/
 
-// CAUTION -> We need a ssl Certificate for this - >
+  // disable http2 by default
+  enable_http2 = false
+}
 
 /*
 Bookstack requires a local image repository
@@ -231,8 +249,10 @@ resource "azurerm_storage_share" "bookstackshareuploads" {
 
 resource "azurerm_storage_share" "bookstacksharestorageuploads" {
   name               = "bookstacksharestorageuploads"
+
   storage_account_id = azurerm_storage_account.stbkstkgwc001.id
   quota              = 50
+  
 }
 
 /*
@@ -261,31 +281,13 @@ resource "azurerm_container_group" "ci-bookstack-prod-germanywestcentral-001" {
     }, {
     port     = 3306
     protocol = "TCP" // allow mysql access
-    }, {
-    port     = 80
-    protocol = "TCP" // allow demo container access access
-  }]
+    }]
 
   image_registry_credential {
     username = azurerm_container_registry.crbookstackprodgermanywestcentral001.admin_username
     password = azurerm_container_registry.crbookstackprodgermanywestcentral001.admin_password
     server   = azurerm_container_registry.crbookstackprodgermanywestcentral001.login_server
   }
-
-/*
-Demo container for testing purposes
-  container {
-    name   = "aci-helloworld"
-    image  = "mcr.microsoft.com/azuredocs/aci-hellofiles:latest"
-    cpu    = "1"
-    memory = "1"
-
-    ports {
-      port     = 80
-      protocol = "TCP"
-    }
-  }
-  */
 
   container {
     name   = "mysql"
@@ -305,10 +307,11 @@ Demo container for testing purposes
       protocol = "TCP"
     }
 
-    /*
+/*
     volume {
       name                 = "mysql-volume"
       mount_path           = "/var/lib/mysql"
+      read_only = false
       share_name           = azurerm_storage_share.mysqlshare.name
       storage_account_name = azurerm_storage_account.stbkstkgwc001.name
       storage_account_key  = azurerm_storage_account.stbkstkgwc001.primary_access_key
@@ -331,7 +334,7 @@ Demo container for testing purposes
       DB_USERNAME = var.bookstack-db-user
       DB_PASSWORD = var.bookstack-db-password
       APP_URL     = var.bookstack-app-url
-      APP_KEY     = "y9PM/0TXxdZZQ056kpi+/M1BP3crGPKh4xw4XSvNCvs="
+      APP_KEY     = var.bookstack-app-key
     }
 
     ports {
